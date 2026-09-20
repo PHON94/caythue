@@ -1,5 +1,6 @@
 import os
 import asyncio
+import unicodedata
 from datetime import datetime, timezone
 
 import discord
@@ -90,6 +91,27 @@ def status_icon(status: str) -> str:
     return icons.get(status, "⚪")
 
 
+def display_width(text: str) -> int:
+    """Độ rộng hiển thị gần đúng cho bảng monospace Discord."""
+    width = 0
+    for char in str(text):
+        if unicodedata.east_asian_width(char) in ("W", "F"):
+            width += 2
+        else:
+            width += 1
+    return width
+
+
+def fit_cell(text: str, width: int) -> str:
+    """Cắt + căn trái theo độ rộng hiển thị, không làm lệch cột."""
+    text = str(text).replace("\n", " ").replace("`", "'")
+
+    while display_width(text) > width:
+        text = text[:-1]
+
+    return text + (" " * max(0, width - display_width(text)))
+
+
 async def build_account_embed() -> discord.Embed:
     accounts = await accounts_col.find().sort("createdAt", 1).to_list(length=None)
 
@@ -102,63 +124,68 @@ async def build_account_embed() -> discord.Embed:
     if not accounts:
         embed.description = "Chưa có tài khoản nào được thêm."
     else:
-        # Mỗi ACC nằm trên một hàng ngang:
-        # STT | Tên đăng nhập | Ghi chú | Trạng thái
-        header = (
-            "```text\n"
-            "STT  | TÊN ĐĂNG NHẬP       | GHI CHÚ              | TRẠNG THÁI\n"
-            "-----|---------------------|----------------------|-------------"
+        # Bảng monospace cố định độ rộng để các cột luôn thẳng hàng.
+        # Không dùng emoji trong ô trạng thái vì emoji có độ rộng hiển thị
+        # khác nhau trên Discord và có thể làm lệch cột.
+        w_stt = 4
+        w_user = 20
+        w_note = 24
+        w_status = 15
+
+        def make_row(stt, username, note, status):
+            return (
+                f"{fit_cell(stt, w_stt)} | "
+                f"{fit_cell(username, w_user)} | "
+                f"{fit_cell(note, w_note)} | "
+                f"{fit_cell(status, w_status)}"
+            )
+
+        header_row = make_row("STT", "TÊN ĐĂNG NHẬP", "GHI CHÚ", "TRẠNG THÁI")
+        separator = (
+            "-" * w_stt + "-+-" +
+            "-" * w_user + "-+-" +
+            "-" * w_note + "-+-" +
+            "-" * w_status
         )
 
         rows = []
-
         for index, acc in enumerate(accounts, start=1):
             username = str(acc.get("username", "Không rõ"))
             note = str(acc.get("note", "")).strip() or "Không có"
             status = str(acc.get("status", "Chưa xử lý"))
 
-            # Giữ bảng gọn trên Discord.
-            username = username.replace("`", "'")[:19]
-            note = note.replace("`", "'").replace("\n", " ")[:20]
-            status_text = f"{status_icon(status)} {status}"[:21]
+            rows.append(make_row(index, username[:20], note[:24], status))
 
-            rows.append(
-                f"{index:<4} | "
-                f"{username:<19} | "
-                f"{note:<20} | "
-                f"{status_text:<21}"
-            )
-
-        # Discord giới hạn độ dài embed, nên chia thành nhiều block
-        # nếu có nhiều ACC.
-        current = header
+        # Discord giới hạn độ dài field value, nên chia bảng thành nhiều block.
+        blocks = []
+        current_lines = [header_row, separator]
+        current_len = len("```text\n") + len(header_row) + len(separator) + len("\n```")
 
         for row in rows:
-            if len(current) + len(row) + 10 > 3900:
-                current += "\n```"
-                embed.add_field(
-                    name="📋 Danh sách ACC",
-                    value=current,
-                    inline=False
-                )
-                current = header
+            extra_len = len(row) + 1
+            if current_len + extra_len > 3900 and len(current_lines) > 2:
+                blocks.append("```text\n" + "\n".join(current_lines) + "\n```")
+                current_lines = [header_row, separator]
+                current_len = len("```text\n") + len(header_row) + len(separator) + len("\n```")
 
-            current += "\n" + row
+            current_lines.append(row)
+            current_len += extra_len
 
-        current += "\n```"
+        if len(current_lines) > 2:
+            blocks.append("```text\n" + "\n".join(current_lines) + "\n```")
 
-        embed.add_field(
-            name="📋 Danh sách ACC",
-            value=current,
-            inline=False
-        )
+        for block in blocks:
+            embed.add_field(
+                name="📋 Danh sách ACC",
+                value=block,
+                inline=False
+            )
 
     embed.set_footer(
         text=f"Tổng ACC: {len(accounts)} • Dữ liệu lưu trên MongoDB"
     )
 
     return embed
-
 
 # =========================================================
 # REBUILD PANEL
@@ -779,43 +806,6 @@ async def acc_status(
         await rebuild_account_panel()
     except Exception as e:
         print(f"❌ Lỗi rebuild bảng sau khi đổi status: {e}")
-
-
-# =========================================================
-# COMMAND: RENDER URL
-# =========================================================
-
-@bot.tree.command(
-    name="url",
-    description="Lấy URL Web Service Render của bot"
-)
-async def render_url(interaction: discord.Interaction):
-    if not is_admin(interaction):
-        await interaction.response.send_message(
-            "❌ Bạn không có quyền dùng lệnh này.",
-            ephemeral=True
-        )
-        return
-
-    render_url = os.getenv("RENDER_EXTERNAL_URL")
-
-    if not render_url:
-        await interaction.response.send_message(
-            "❌ Không tìm thấy `RENDER_EXTERNAL_URL`.\n"
-            "Hãy kiểm tra bot đang chạy trên Render Web Service.",
-            ephemeral=True
-        )
-        return
-
-    render_url = render_url.rstrip("/")
-
-    await interaction.response.send_message(
-        "🌐 **Render URL**\n"
-        f"{render_url}\n\n"
-        "❤️ **Health URL**\n"
-        f"{render_url}/health",
-        ephemeral=True
-    )
 
 
 # =========================================================
