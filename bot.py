@@ -124,13 +124,12 @@ async def build_account_embed() -> discord.Embed:
     if not accounts:
         embed.description = "Chưa có tài khoản nào được thêm."
     else:
-        # Bảng monospace cố định độ rộng để các cột luôn thẳng hàng.
-        # Không dùng emoji trong ô trạng thái vì emoji có độ rộng hiển thị
-        # khác nhau trên Discord và có thể làm lệch cột.
-        w_stt = 4
-        w_user = 20
-        w_note = 24
-        w_status = 15
+        # Bảng gọn để Discord không tự xuống dòng.
+        # Giữ tổng chiều rộng khoảng 60 ký tự để hiển thị ổn định trên desktop/mobile.
+        w_stt = 3
+        w_user = 16
+        w_note = 20
+        w_status = 12
 
         def make_row(stt, username, note, status):
             return (
@@ -140,7 +139,7 @@ async def build_account_embed() -> discord.Embed:
                 f"{fit_cell(status, w_status)}"
             )
 
-        header_row = make_row("STT", "TÊN ĐĂNG NHẬP", "GHI CHÚ", "TRẠNG THÁI")
+        header_row = make_row("#", "TÀI KHOẢN", "GHI CHÚ", "TRẠNG THÁI")
         separator = (
             "-" * w_stt + "-+-" +
             "-" * w_user + "-+-" +
@@ -154,32 +153,47 @@ async def build_account_embed() -> discord.Embed:
             note = str(acc.get("note", "")).strip() or "Không có"
             status = str(acc.get("status", "Chưa xử lý"))
 
-            rows.append(make_row(index, username[:20], note[:24], status))
+            # Cắt theo số ký tự trước, sau đó fit_cell căn theo độ rộng hiển thị.
+            username = username[:w_user]
+            note = note.replace("\n", " ")[:w_note]
+            status = status[:w_status]
 
-        # Discord giới hạn độ dài field value, nên chia bảng thành nhiều block.
-        blocks = []
-        current_lines = [header_row, separator]
-        current_len = len("```text\n") + len(header_row) + len(separator) + len("\n```")
+            rows.append(make_row(index, username, note, status))
 
-        for row in rows:
-            extra_len = len(row) + 1
-            if current_len + extra_len > 3900 and len(current_lines) > 2:
-                blocks.append("```text\n" + "\n".join(current_lines) + "\n```")
-                current_lines = [header_row, separator]
-                current_len = len("```text\n") + len(header_row) + len(separator) + len("\n```")
+        table_lines = [header_row, separator, *rows]
+        table = "```text\n" + "\n".join(table_lines) + "\n```"
 
-            current_lines.append(row)
-            current_len += extra_len
-
-        if len(current_lines) > 2:
-            blocks.append("```text\n" + "\n".join(current_lines) + "\n```")
-
-        for block in blocks:
+        # Không chia thành nhiều field khi chưa cần, tránh tạo cảm giác bảng bị tách.
+        if len(table) <= 4000:
             embed.add_field(
-                name="📋 Danh sách ACC",
-                value=block,
+                name=f"📋 Danh sách ACC • {len(accounts)} tài khoản",
+                value=table,
                 inline=False
             )
+        else:
+            # Nếu có rất nhiều ACC thì chia thành nhiều bảng, mỗi bảng lặp header.
+            chunks = []
+            current = [header_row, separator]
+            current_len = len("```text\n```") + len(header_row) + len(separator) + 2
+
+            for row in rows:
+                if current_len + len(row) + 1 > 3900 and len(current) > 2:
+                    chunks.append("```text\n" + "\n".join(current) + "\n```")
+                    current = [header_row, separator]
+                    current_len = len("```text\n```") + len(header_row) + len(separator) + 2
+
+                current.append(row)
+                current_len += len(row) + 1
+
+            if len(current) > 2:
+                chunks.append("```text\n" + "\n".join(current) + "\n```")
+
+            for i, chunk in enumerate(chunks, start=1):
+                embed.add_field(
+                    name=f"📋 Danh sách ACC • {i}/{len(chunks)}",
+                    value=chunk,
+                    inline=False
+                )
 
     embed.set_footer(
         text=f"Tổng ACC: {len(accounts)} • Dữ liệu lưu trên MongoDB"
